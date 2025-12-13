@@ -2,416 +2,353 @@
 #include <fstream>
 #include <string>
 #include <limits>
+#include <algorithm>
+#include <vector>
+
 using namespace std;
 
-// ---------------- STRUCTURES ----------------
+// ---------------- STRUCTS ----------------
+
+struct Account {
+    string username;
+    size_t pinHash;
+};
 
 struct Transaction {
     int id;
+    string username;
     string type;
     float amount;
     string note;
-    string date; // YYYY-MM
+    string date;
 };
 
-struct Account {
-    string name;
-    int pin;
-};
+// ---------------- UTILITIES ----------------
 
-// ---------------- PIN VALIDATION ----------------
-
-bool isValidPIN(const string &pin) {
-    if (pin.length() != 4) return false;
-    for (char c : pin) if (!isdigit(static_cast<unsigned char>(c))) return false;
-    return true;
-}
-
-// ---------------- SAFE STRING -> INT FOR PIN ----------------
-// (No exception handling)
-bool stringToInt(const string &s, int &num) {
-    if (!isValidPIN(s)) return false;
-    num = (s[0]-'0')*1000 + (s[1]-'0')*100 + (s[2]-'0')*10 + (s[3]-'0');
-    return true;
-}
-
-// ---------------- ACCOUNT FUNCTIONS ----------------
-
-void saveAccount(Account acc) {
-    ofstream file("account.txt");
-    if (!file) {
-        cout << "Error saving account!\n";
-        return;
-    }
-    file << acc.name << endl;
-    file << acc.pin << endl;
-}
-
-bool loadAccount(Account &acc) {
-    ifstream file("account.txt");
-    if (!file) return false;
-
-    string pinLine;
-
-    if (!getline(file, acc.name)) return false;
-    if (!getline(file, pinLine)) return false;
-
-    int tempPin;
-    if (!stringToInt(pinLine, tempPin)) {
-        cout << "Invalid input!\n";
-        return false;
-    }
-
-    acc.pin = tempPin;
-    return true;
-}
-
-// -------- CREATE ACCOUNT --------
-
-void createAccount(Account &acc) {
-    cout << "\n--- Create Your Financial Account ---\n";
-
+void clearInput() {
+    cin.clear();
     cin.ignore(numeric_limits<streamsize>::max(), '\n');
-    cout << "Enter your full name: ";
-    getline(cin, acc.name);
-
-    string pinInput;
-    int attempts = 0;
-
-    while (attempts < 3) {
-        cout << "Set a 4-digit PIN: ";
-        cin >> pinInput;
-
-        if (isValidPIN(pinInput)) {
-            stringToInt(pinInput, acc.pin);
-            saveAccount(acc);
-            cout << "Account created successfully!\n";
-            return;
-        }
-
-        cout << "Invalid input!\n";
-        attempts++;
-    }
-
-    cout << "Too many invalid attempts.\n";
 }
 
-// -------- CHECK PIN --------
+size_t hashPIN(const string& pin) {
+    return hash<string>{}(pin);
+}
 
-bool checkPIN(Account acc) {
-    string pinInput;
-    int attempts = 0;
-    int temp;
+float calculateMainBalance(Transaction records[], int total, const string& user) {
+    float income = 0, expense = 0;
 
-    while (attempts < 3) {
-        cout << "Enter PIN: ";
-        cin >> pinInput;
+    for (int i = 0; i < total; i++) {
+        if (records[i].username != user) continue;
 
-        if (!stringToInt(pinInput, temp)) {
-            cout << "Invalid input!\n";
-        } else if (temp == acc.pin) {
-            cout << "Access granted.\n";
-            return true;
-        } else {
-            cout << "Incorrect PIN!\n";
-        }
-
-        attempts++;
+        if (records[i].type == "income")
+            income += records[i].amount;
+        else if (records[i].type == "expense")
+            expense += records[i].amount;
     }
+    return income - expense;
+}
 
-    cout << "Too many failed attempts.\n";
+
+// ---------------- ACCOUNT FILE HANDLING ----------------
+
+vector<Account> loadAccounts() {
+    vector<Account> accounts;
+    ifstream file("account.txt");
+    string line;
+
+    while (getline(file, line)) {
+        size_t pos = line.find('|');
+        if (pos == string::npos) continue;
+
+        Account acc;
+        acc.username = line.substr(0, pos);
+        acc.pinHash = stoull(line.substr(pos + 1));
+        accounts.push_back(acc);
+    }
+    file.close();
+    return accounts;
+}
+
+void saveAllAccounts(const vector<Account>& accounts) {
+    ofstream file("account.txt", ios::trunc);
+    for (const auto& acc : accounts) {
+        file << acc.username << "|" << acc.pinHash << endl;
+    }
+    file.close();
+}
+
+bool userExists(const vector<Account>& accounts, const string& user) {
+    for (const auto& a : accounts)
+        if (a.username == user)
+            return true;
     return false;
 }
 
-// -------- RESET PIN --------
+bool isValidDate(const string& date) {
+    // Format: YYYY-MM
+    if (date.length() != 7 || date[4] != '-')
+        return false;
 
-void resetPIN(Account &acc) {
-    string oldPinInput;
-    int attempts = 0;
-    int temp;
+    string year = date.substr(0, 4);
+    string monthStr = date.substr(5, 2);
 
-    while (attempts < 3) {
-        cout << "Enter current PIN: ";
-        cin >> oldPinInput;
+    if (!all_of(year.begin(), year.end(), ::isdigit) ||
+        !all_of(monthStr.begin(), monthStr.end(), ::isdigit))
+        return false;
 
-        if (stringToInt(oldPinInput, temp) && temp == acc.pin) break;
+    int month = stoi(monthStr);
+    return (month >= 1 && month <= 12);
+}
 
-        cout << "Invalid input!\n";
-        attempts++;
+int findUserIndex(const vector<Account>& accounts, const string& user) {
+    for (int i = 0; i < accounts.size(); i++)
+        if (accounts[i].username == user)
+            return i;
+    return -1;
+}
+
+// ---------------- ACCOUNT OPERATIONS ----------------
+
+void createAccount(vector<Account>& accounts) {
+    Account acc;
+    string pin;
+
+    cout << "Enter username: ";
+    getline(cin >> ws, acc.username);
+
+    if (userExists(accounts, acc.username)) {
+        cout << "User already exists\n";
+        return;
     }
 
-    if (attempts == 3) {
-        cout << "Too many invalid attempts.\n";
+    while (true) {
+        cout << "Set 4-digit PIN: ";
+        cin >> pin;
+        if (pin.length() == 4 && all_of(pin.begin(), pin.end(), ::isdigit))
+            break;
+        cout << "Invalid PIN\n";
+    }
+
+    acc.pinHash = hashPIN(pin);
+    accounts.push_back(acc);
+    saveAllAccounts(accounts);
+
+    cout << "Account created successfully\n";
+}
+
+bool verifyPIN(const Account& acc) {
+    string pin;
+    cout << "Enter PIN: ";
+    cin >> pin;
+    return hashPIN(pin) == acc.pinHash;
+}
+
+void resetPIN(vector<Account>& accounts) {
+    string user;
+    cout << "Enter username: ";
+    getline(cin >> ws, user);
+
+    int idx = findUserIndex(accounts, user);
+    if (idx == -1) {
+        cout << "User not found\n";
+        return;
+    }
+
+    if (!verifyPIN(accounts[idx])) {
+        cout << "Wrong PIN\n";
         return;
     }
 
     string newPin;
-    attempts = 0;
-
-    while (attempts < 3) {
-        cout << "Enter NEW 4-digit PIN: ";
+    while (true) {
+        cout << "Enter new 4-digit PIN: ";
         cin >> newPin;
+        if (newPin.length() == 4 && all_of(newPin.begin(), newPin.end(), ::isdigit))
+            break;
+        cout << "Invalid PIN\n";
+    }
 
-        if (stringToInt(newPin, acc.pin)) {
-            saveAccount(acc);
-            cout << "PIN reset successfully!\n";
+    accounts[idx].pinHash = hashPIN(newPin);
+    saveAllAccounts(accounts);
+
+    cout << "PIN reset successful\n";
+}
+
+// ---------------- TRANSACTIONS ----------------
+
+int loadTransactions(Transaction records[]) {
+    ifstream file("finance.txt");
+    string line;
+    int count = 0;
+
+    while (getline(file, line)) {
+        size_t pos, prev = 0;
+
+        pos = line.find('|'); records[count].username = line.substr(prev, pos - prev);
+        prev = pos + 1;
+
+        pos = line.find('|', prev); records[count].id = stoi(line.substr(prev, pos - prev));
+        prev = pos + 1;
+
+        pos = line.find('|', prev); records[count].type = line.substr(prev, pos - prev);
+        prev = pos + 1;
+
+        pos = line.find('|', prev); records[count].amount = stof(line.substr(prev, pos - prev));
+        prev = pos + 1;
+
+        pos = line.find('|', prev); records[count].note = line.substr(prev, pos - prev);
+        prev = pos + 1;
+
+        records[count].date = line.substr(prev);
+        count++;
+    }
+    file.close();
+    return count;
+}
+
+void saveTransaction(const Transaction& t) {
+    ofstream file("finance.txt", ios::app);
+    file << t.username << "|" << t.id << "|" << t.type << "|"
+         << t.amount << "|" << t.note << "|" << t.date << endl;
+    file.close();
+}
+
+void addTransaction(Transaction records[], int& total, const string& user) {
+    Transaction t;
+    t.id = total + 1;
+    t.username = user;
+
+    while (true) {
+        cout << "Type (income/expense/saving): ";
+        cin >> t.type;
+        if (t.type == "income" || t.type == "expense" || t.type == "saving")
+            break;
+        cout << "Invalid type\n";
+    }
+
+    cout << "Amount: ";
+    cin >> t.amount;
+
+    if (t.type == "expense") {
+        float currentBalance = calculateMainBalance(records, total, user);
+        if (t.amount > currentBalance) {
+            cout << "❌ Insufficient balance! Expense not allowed.\n";
             return;
         }
-
-        cout << "Invalid input!\n";
-        attempts++;
     }
 
-    cout << "Too many invalid attempts.\n";
+    clearInput();
+    cout << "Note: ";
+    getline(cin, t.note);
+
+    while (true) {
+        cout << "Date (YYYY-MM): ";
+        cin >> t.date;
+        if (isValidDate(t.date))
+            break;
+        cout << "Invalid date\n";
+    }
+
+    records[total++] = t;
+    saveTransaction(t);
+
+    cout << "Transaction saved\n";
 }
 
-// ---------------- TRANSACTION FUNCTIONS ----------------
+void checkBalance(Transaction records[], int total, const string& user) {
+    float income = 0, expense = 0, saving = 0;
 
-void addTransaction(Transaction record[], int &totalRecords) {
-    cout << "\nEnter type (income/expense/saving): ";
-    cin >> record[totalRecords].type;
+    for (int i = 0; i < total; i++) {
+        if (records[i].username != user) continue;
 
-    if (record[totalRecords].type != "income" &&
-        record[totalRecords].type != "expense" &&
-        record[totalRecords].type != "saving") {
-        cout << "Invalid input!\n";
-        return;
+        if (records[i].type == "income") income += records[i].amount;
+        else if (records[i].type == "expense") expense += records[i].amount;
+        else if (records[i].type == "saving") saving += records[i].amount;
     }
 
-    cout << "Enter amount: ";
-    if (!(cin >> record[totalRecords].amount)) {
-        cout << "Invalid input!\n";
-        cin.clear();
-        cin.ignore(1000, '\n');
-        return;
-    }
+    float mainBalance = income - expense;
+    float totalBalance = mainBalance + saving;
 
-    cout << "Enter note: ";
-    cin.ignore(numeric_limits<streamsize>::max(), '\n');
-    getline(cin, record[totalRecords].note);
-
-    cout << "Enter date (YYYY-MM): ";
-    cin >> record[totalRecords].date;
-
-    record[totalRecords].id = totalRecords + 1;
-    totalRecords++;
-
-    cout << "Transaction added.\n";
+    cout << "\nBalance\n";
+    cout << "Main Balance: " << mainBalance << endl;
+    cout << "Savings: " << saving << endl;
+    cout << "Total Balance: " << totalBalance << endl;
 }
 
-void checkBalance(Transaction record[], int totalRecords) {
-    float income = 0, expense = 0, savings = 0;
+void viewTransactions(Transaction records[], int total, const string& user) {
+    cout << "\nTransactions for " << user << ":\n";
+    for (int i = 0; i < total; i++) {
+        if (records[i].username != user) continue;
 
-    for (int i = 0; i < totalRecords; i++) {
-        if (record[i].type == "income") income += record[i].amount;
-        else if (record[i].type == "saving") savings += record[i].amount;
-        else if (record[i].type == "expense") expense += record[i].amount;
-    }
-
-    cout << "\n--- Current Balance ---\n";
-    cout << "Main Balance: " << income - expense << endl;
-    cout << "Savings Balance: " << savings << endl;
-    cout << "Total Balance: " << (income - expense + savings) << endl;
-}
-
-void showTransactions(Transaction record[], int totalRecords) {
-    cout << "\n--- Transaction History ---\n";
-
-    for (int i = 0; i < totalRecords; i++) {
-        cout << "ID: " << record[i].id
-             << " | Type: " << record[i].type
-             << " | Amount: " << record[i].amount
-             << " | Note: " << record[i].note
-             << " | Date: " << record[i].date << endl;
+        cout << records[i].id << " | " << records[i].type << " | "
+             << records[i].amount << " | " << records[i].note
+             << " | " << records[i].date << endl;
     }
 }
 
-void showTotalIncome(Transaction record[], int totalRecords) {
-    float income = 0;
-
-    for (int i = 0; i < totalRecords; i++)
-        if (record[i].type == "income")
-            income += record[i].amount;
-
-    cout << "\nTotal Income: " << income << endl;
-}
-
-void showTotalExpense(Transaction record[], int totalRecords) {
-    float expense = 0;
-
-    for (int i = 0; i < totalRecords; i++)
-        if (record[i].type == "expense")
-            expense += record[i].amount;
-
-    cout << "\nTotal Expense: " << expense << endl;
-}
-
-// ------------ UPDATED MONTHLY SUMMARY (MERGED) ------------
-
-void monthlySummary(Transaction record[], int totalRecords) {
-    string month;
-    float income = 0, expense = 0;
-
-    cout << "Enter month (YYYY-MM): ";
-    cin >> month;
-
-    // -------- VALIDATION FOR YYYY-MM --------
-    if (month.length() != 7 ||
-        month[4] != '-' ||
-        !isdigit(month[0]) || !isdigit(month[1]) ||
-        !isdigit(month[2]) || !isdigit(month[3]) ||
-        !isdigit(month[5]) || !isdigit(month[6]))
-    {
-        cout << "Invalid input!\n";
-        return;
-    }
-
-    string mm = month.substr(5, 2);
-    int monthValue = stoi(mm);
-
-    if (monthValue < 1 || monthValue > 12) {
-        cout << "Invalid input!\n";
-        return;
-    }
-    // ----------------------------------------
-
-    for (int i = 0; i < totalRecords; i++) {
-        if (record[i].date == month) {
-            if (record[i].type == "income")
-                income += record[i].amount;
-            else if (record[i].type == "expense")
-                expense += record[i].amount;
-        }
-    }
-
-    cout << "\n--- Summary for " << month << " ---\n";
-    cout << "Total Income: " << income << endl;
-    cout << "Total Expense: " << expense << endl;
-    cout << "Balance: " << (income - expense) << endl;
-}
-
-// ---------------- FILE HANDLING ----------------
-
-void saveData(Transaction record[], int totalRecords) {
-    ofstream file("finance.txt");
-
-    if (!file) {
-        cout << "Invalid input!\n";
-        return;
-    }
-
-    for (int i = 0; i < totalRecords; i++) {
-        file << record[i].id << " "
-             << record[i].type << " "
-             << record[i].amount << " "
-             << record[i].note << " "
-             << record[i].date << endl;
-    }
-
-    cout << "Data saved.\n";
-}
-
-int loadData(Transaction record[]) {
-    ifstream file("finance.txt");
-    int totalRecords = 0;
-
-    if (!file) return 0;
-
-    while (file >> record[totalRecords].id) {
-        file >> record[totalRecords].type;
-        file >> record[totalRecords].amount;
-        file >> record[totalRecords].note;
-        file >> record[totalRecords].date;
-        totalRecords++;
-    }
-    return totalRecords;
-}
-
-// ---------------- MAIN PROGRAM ----------------
+// ---------------- MAIN ----------------
 
 int main() {
-    Transaction record[500];
-    int totalRecords = loadData(record);
+    vector<Account> accounts = loadAccounts();
 
-    Account acc;
-    bool hasAccount = loadAccount(acc);
+    Transaction records[500];
+    int totalRecords = loadTransactions(records);
 
     int choice;
+    string user;
 
     do {
         cout << "\n--- Personal Finance Manager ---\n";
         cout << "1. Create Account\n";
-        cout << "2. Add Transaction\n";
-        cout << "3. Check Current Balance (PIN)\n";
-        cout << "4. Total Income (PIN)\n";
-        cout << "5. Total Expense (PIN)\n";
-        cout << "6. View Transaction History\n";
-        cout << "7. Monthly Summary (PIN)\n";
-        cout << "8. Reset PIN\n";
-        cout << "9. Save & Exit\n";
-
-        cout << "Enter choice: ";
-        if (!(cin >> choice)) {
-            cout << "Invalid input!\n";
-            cin.clear();
-            cin.ignore(1000, '\n');
-            continue;
-        }
+        cout << "2. Reset PIN\n";
+        cout << "3. Add Transaction\n";
+        cout << "4. Check Balance\n";
+        cout << "5. View Transactions\n";
+        cout << "6. Exit\n";
+        cout << "Choice: ";
+        cin >> choice;
 
         switch (choice) {
             case 1:
-                createAccount(acc);
-                hasAccount = loadAccount(acc);
+                createAccount(accounts);
                 break;
 
             case 2:
-                if (hasAccount)
-                    addTransaction(record, totalRecords);
-                else
-                    cout << "Create an account first.\n";
+                resetPIN(accounts);
                 break;
 
             case 3:
-                if (hasAccount && checkPIN(acc))
-                    checkBalance(record, totalRecords);
+                cout << "Username: ";
+                 getline(cin >> ws, user);
+                if (userExists(accounts, user) &&
+                    verifyPIN(accounts[findUserIndex(accounts, user)]))
+                    addTransaction(records, totalRecords, user);
+                else
+                    cout << "Authentication failed\n";
                 break;
 
             case 4:
-                if (hasAccount && checkPIN(acc))
-                    showTotalIncome(record, totalRecords);
+                cout << "Username: ";
+                getline(cin >> ws, user);
+                if (userExists(accounts, user) &&
+                    verifyPIN(accounts[findUserIndex(accounts, user)]))
+                    checkBalance(records, totalRecords, user);
+                else
+                    cout << "Authentication failed\n";
                 break;
 
             case 5:
-                if (hasAccount && checkPIN(acc))
-                    showTotalExpense(record, totalRecords);
-                break;
-
-            case 6:
-                showTransactions(record, totalRecords);
-                break;
-
-            case 7:
-                if (hasAccount && checkPIN(acc))
-                    monthlySummary(record, totalRecords);
-                break;
-
-            case 8:
-                if (hasAccount)
-                    resetPIN(acc);
+                cout << "Username: ";
+                getline(cin >> ws, user);
+                if (userExists(accounts, user) &&
+                    verifyPIN(accounts[findUserIndex(accounts, user)]))
+                    viewTransactions(records, totalRecords, user);
                 else
-                    cout << "No account found.\n";
+                    cout << "Authentication failed\n";
                 break;
-
-            case 9:
-                saveData(record, totalRecords);
-                cout << "Goodbye!\n";
-                break;
-
-            default:
-                cout << "Invalid input!\n";
         }
 
-    } while (choice != 9);
-
+    } while (choice != 6);
+    cout<<"\nThank You!"<<endl;
     return 0;
 }
